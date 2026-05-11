@@ -1,63 +1,90 @@
 import { Text, View, Button, Image, StyleSheet, Alert } from "react-native";
 import { useState } from "react";
 import * as ImagePicker from "expo-image-picker";
-import { Camera } from "expo-camera";
-import * as MediaLibrary from "expo-media-library";
+import * as Location from "expo-location";
+import { supabase } from "./lib/supabase";
 
 export default function App() {
   const [image, setImage] = useState<string | null>(null);
 
-  // OPEN CAMERA
   const openCamera = async () => {
-    const permission = await Camera.requestCameraPermissionsAsync();
-
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       Alert.alert("Camera permission is required!");
       return;
     }
-
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 1,
     });
-
     if (!result.canceled) {
       setImage(result.assets[0].uri);
     }
   };
 
-  // OPEN GALLERY
   const openGallery = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
     if (!permission.granted) {
       Alert.alert("Gallery permission is required!");
       return;
     }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 1,
     });
-
     if (!result.canceled) {
       setImage(result.assets[0].uri);
     }
   };
 
-  // SAVE IMAGE
-  const saveImage = async () => {
+  const saveToSupabase = async () => {
     if (!image) {
-      Alert.alert("No image to save!", "Please take or pick an image first.");
+      Alert.alert("No image!", "Please take or pick an image first.");
       return;
     }
 
     try {
-      const asset = await MediaLibrary.createAssetAsync(image);
-      await MediaLibrary.createAlbumAsync("MyApp", asset, false);
-      Alert.alert("Berhasil!", "Gambar berhasil disimpan ke gallery!");
-    } catch (error) {
-      Alert.alert("Gagal!", String(error));
+      // Get location
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Location permission is required!");
+        return;
+      }
+      const location = await Location.getCurrentPositionAsync({});
+      const latitude = location.coords.latitude.toString();
+      const longitude = location.coords.longitude.toString();
+
+      // Upload image to Supabase Storage
+      const fileName = `photo-${Date.now()}.jpeg`;
+      const response = await fetch(image);
+      const blob = await response.blob();
+      const arrayBuffer = await new Response(blob).arrayBuffer();
+
+      const { error: uploadError } = await supabase.storage
+        .from("images")
+        .upload(`camera/${fileName}`, arrayBuffer, {
+          contentType: "image/jpeg",
+        });
+
+      if (uploadError) throw uploadError;
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from("images")
+        .getPublicUrl(`camera/${fileName}`);
+
+      const image_url = urlData.publicUrl;
+
+      // Insert to photo table
+      const { error: insertError } = await supabase
+        .from("photo")
+        .insert([{ latitude, longitude, image_url }]);
+
+      if (insertError) throw insertError;
+
+      Alert.alert("Berhasil!", "Foto dan lokasi berhasil disimpan ke Supabase!");
+    } catch (error: any) {
+      Alert.alert("Gagal!", error?.message ?? "Terjadi kesalahan.");
       console.error(error);
     }
   };
@@ -76,7 +103,7 @@ export default function App() {
 
       {image && (
         <View style={styles.button}>
-          <Button title="SAVE IMAGE" onPress={saveImage} color="green" />
+          <Button title="SAVE TO SUPABASE" onPress={saveToSupabase} color="green" />
         </View>
       )}
 
@@ -98,7 +125,7 @@ const styles = StyleSheet.create({
   },
   button: {
     marginVertical: 5,
-    width: 150,
+    width: 200,
   },
   image: {
     width: 250,
